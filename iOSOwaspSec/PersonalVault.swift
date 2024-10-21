@@ -114,6 +114,7 @@ actor PersonalVault {
         return nil
     }
 
+    // MARK: File Storage
     func saveFileDataStorage(fromUrl: URL) {
         let fileManager = FileManager.default
         do {
@@ -135,6 +136,7 @@ actor PersonalVault {
         }
     }
 
+    // MARK: PrivateKey SecureEnclave
     func generateSecureEnclavePrivateKey() -> SecKey? {
         var error: Unmanaged<CFError>?
         guard let accessControl = SecAccessControlCreateWithFlags(
@@ -184,6 +186,41 @@ actor PersonalVault {
         }
     }
 
+    // MARK: Generate PublicKey / Encrypt & Decrypt
+    func retrievePublicKey(privateKey: SecKey) -> SecKey? {
+        return SecKeyCopyPublicKey(privateKey)
+    }
+
+    func encryptMessage(message: String) -> Data? {
+        let publicKey = retrievePublicKey(privateKey: getSecureEnclavePrivateKey()!)!
+        let plainText = Data(message.utf8)
+        
+        var error: Unmanaged<CFError>?
+        guard let cipherText = SecKeyCreateEncryptedData(publicKey,
+                                                         SecKeyAlgorithm.eciesEncryptionCofactorX963SHA256AESGCM,
+                                                         plainText as CFData,
+                                                         &error) else {
+            print("Encryption error: \(String(describing: error))")
+            return nil
+        }
+        
+        return cipherText as Data
+    }
+
+    func decryptMessage(cipherText: Data, privateKey: SecKey) -> String? {
+        var error: Unmanaged<CFError>?
+        guard let decryptedData = SecKeyCreateDecryptedData(privateKey,
+                                                            SecKeyAlgorithm.eciesEncryptionCofactorX963SHA256AESGCM,
+                                                            cipherText as CFData,
+                                                            &error) else {
+            print("Decryption error: \(String(describing: error))")
+            return nil
+        }
+        
+        return String(data: decryptedData as Data, encoding: .utf8)
+    }
+
+
     // Check if the CoreData container is secure
     func verifyFileProtection() {
         guard let storeURL = PersistenceController.shared
@@ -222,6 +259,27 @@ actor PersonalVault {
             // If error is not LAError, return false
             return false
         }
+    }
+
+    func cleanData() {
+        let deleteQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: passwordTag
+        ]
+        SecItemDelete(deleteQuery as CFDictionary)
+        let privateQuery: [String: Any] = [
+            kSecClass as String: kSecClassKey,
+            kSecAttrApplicationTag as String: privateKeyTag,
+            kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+            kSecReturnRef as String: true
+        ]
+        SecItemDelete(privateQuery as CFDictionary)
+        let userQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: userNameTag,
+            kSecAttrAccessGroup as String: accessGroup
+        ]
+        SecItemDelete(userQuery as CFDictionary)
     }
     
 }

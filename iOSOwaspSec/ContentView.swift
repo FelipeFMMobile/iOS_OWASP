@@ -24,7 +24,9 @@ struct ContentView: View {
     @State private var address = ""
     @State private var pdfURLString = "https://conasems-ava-prod.s3.sa-east-1.amazonaws.com/aulas/ava/dummy-1641923583.pdf"
     @State private var alertPassCode = false
+    @State private var alertPublicKey = false
     @State private var privateKey = ""
+    @State private var decryptedText = ""
     private var vault = PersonalVault()
 
     var body: some View {
@@ -75,7 +77,7 @@ struct ContentView: View {
                             Text("Your device must set a passcode!")
                         }
                 }
-                Section("Pdf file url") {
+                Section("Pdf file url (file storage)") {
                     TextField("Insert pdf file url", text: $pdfURLString)
                         .keyboardType(.default)
                         .submitLabel(.send)
@@ -85,21 +87,30 @@ struct ContentView: View {
                             }
                         }
                 }
-                Section("Create a private key") {
-                    TextField("private key", text: $privateKey)
+                Section("Create a private key (only in device)") {
+                    TextField("private key hash", text: $privateKey)
                         .keyboardType(.default)
                         .submitLabel(.join)
                         .onSubmit {
                             Task {
                                 if let _ = await vault.generateSecureEnclavePrivateKey() {
                                     if let pKey = await vault.getSecureEnclavePrivateKey() {
-                                        privateKey = getStringFromSecKey(pKey) ?? ""
+                                        privateKey = pKey.hashValue.description
+                                        if let encrypted = await vault.encryptMessage(message: userName) {
+                                            self.decryptedText = await vault.decryptMessage(cipherText: encrypted,
+                                                                                            privateKey: pKey) ?? ""
+                                            alertPublicKey = true
+                                        }
                                     }
                                 }
                             }
                         }
+                    if alertPublicKey {
+                        Text("The data was encrypted with a public key pair from the private key secured in SecureEnclave!")
+                        Text("Decrypted data: \(decryptedText)")
+                    }
                 }
-                Section("User Address") {
+                Section("User Address (coreData storage)") {
                     TextField("Type your address", text: $address)
                         .keyboardType(.namePhonePad)
                         .submitLabel(.send)
@@ -114,26 +125,11 @@ struct ContentView: View {
                             }
                         }
                 }
-                Section {
-                    List {
-                        ForEach(items) { item in
-                            NavigationLink {
-                                Text("Item at \(item.timestamp!, formatter: itemFormatter)")
-                            } label: {
-                                Text(item.timestamp!, formatter: itemFormatter)
-                            }
-                        }
-                        .onDelete(perform: deleteItems)
-                    }
-                }
             }
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    EditButton()
-                }
                 ToolbarItem {
-                    Button(action: addItem) {
-                        Label("Add Item", systemImage: "plus")
+                    Button(action: cleanData) {
+                        Label("Clean Data", systemImage: "trash")
                     }
                 }
             }.navigationTitle("Personal Information")
@@ -144,13 +140,11 @@ struct ContentView: View {
         do {
             if let user = users.first {
                 user.setValue(address, forKey: "address")
-                try user.managedObjectContext?.save()
             } else {
                 let user = User(context: viewContext)
                 user.setValue(address, forKey: "address")
-                try user.managedObjectContext?.save()
             }
-           
+            try viewContext.save()
         } catch {
             let nsError = error as NSError
             fatalError("Unresolved error \(nsError), \(nsError.userInfo)")
@@ -166,34 +160,14 @@ struct ContentView: View {
         }
     }
 
-    private func addItem() {
-        withAnimation {
-            let newItem = Item(context: viewContext)
-            newItem.timestamp = Date()
-
-            do {
+    private func cleanData() {
+        Task {
+            await vault.cleanData()
+            if let user = users.first {
+                viewContext.delete(user)
                 try viewContext.save()
-            } catch {
-                // Replace this implementation with code to handle the error appropriately.
-                // fatalError() causes the application to generate a crash log and terminate. You should not use this function in a shipping application, although it may be useful during development.
-                let nsError = error as NSError
-                fatalError("Unresolved error \(nsError), \(nsError.userInfo)")
             }
-        }
-    }
-
-    private func deleteItems(offsets: IndexSet) {
-        withAnimation {
-            offsets.map { items[$0] }.forEach(viewContext.delete)
-
-            do {
-                try viewContext.save()
-            } catch {
-                // Replace this implementation with code to handle the error appropriately.
-                // fatalError() causes the application to generate a crash log and terminate. You should not use this function in a shipping application, although it may be useful during development.
-                let nsError = error as NSError
-                fatalError("Unresolved error \(nsError), \(nsError.userInfo)")
-            }
+            alertPublicKey = false
         }
     }
 
@@ -210,20 +184,6 @@ struct ContentView: View {
             return false
         }
     }
-
-    private func getStringFromSecKey(_ key: SecKey) -> String? {
-        // Get the key data
-        var error: Unmanaged<CFError>?
-        if let keyData = SecKeyCopyExternalRepresentation(key, &error) as Data? {
-            // Convert the key data to a Base64-encoded string
-            let keyString = keyData.base64EncodedString()
-            return keyString
-        } else if let error = error?.takeRetainedValue() {
-            print("Error extracting key data: \(error.localizedDescription)")
-        }
-        return nil
-    }
-
 }
 
 private let itemFormatter: DateFormatter = {
